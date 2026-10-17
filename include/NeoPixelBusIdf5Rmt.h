@@ -19,10 +19,18 @@
 *
 * This method uses only the new driver, so it coexists with the core.
 *
-* NOTE: all ESP-IDF "new RMT" includes live in RmtIdf5Driver.cpp, not here.
+* NOTE: all ESP-IDF "new RMT" includes live in RmtIdf5ChannelPool.cpp, not here.
 * Including driver/rmt_tx.h in the same TU as <NeoPixelBus.h> does not compile
 * because NeoPixelBus pulls in the deprecated legacy driver/rmt.h (both define
-* rmt_channel_t). See RmtIdf5Driver.h.
+* rmt_channel_t). See RmtIdf5Driver.h / RmtIdf5ChannelPool.h.
+*
+* Channel sharing
+* ---------------
+* All strips of this method share one pool of RMT TX channels
+* (RmtIdf5ChannelPool). While there are no more strips than the chip has TX
+* channels (2 on ESP32-C3, 4 on S3/C6) every strip gets its own channel; beyond
+* that, extra strips share a channel and it is re-pointed to another GPIO on
+* demand. This is what lets a board with, say, 3 strips run on a C3.
 *
 * Buffer / timing notes
 * ---------------------
@@ -94,6 +102,9 @@ class NeoEsp32Idf5RmtMethodBase {
 		uint8_t* _dataEditing = nullptr;
 		uint8_t* _dataSending = nullptr;
 
+		bool _attachErrorLogged = false;
+		bool _transmitErrorLogged = false;
+
 		void construct() {
 			_dataEditing = static_cast<uint8_t*>(heap_caps_malloc(_sizeData, MALLOC_CAP_8BIT));
 			_dataSending = static_cast<uint8_t*>(heap_caps_malloc(_sizeData, MALLOC_CAP_8BIT));
@@ -152,11 +163,22 @@ class NeoEsp32Idf5RmtMethodBase {
 			};
 
 			if (!_driver.begin(_pin, speed, InterruptPriority)) {
-				Serial.printf("NeoPixelBusIdf5Rmt: failed to create RMT TX channel on pin %u\n", static_cast<unsigned>(_pin));
+				Serial.printf("NeoPixelBusIdf5Rmt: failed to reserve RMT channel slot for pin %u\n", static_cast<unsigned>(_pin));
 			}
 		}
 
 		void Update(bool /*maintainBufferConsistency*/) {
+			// Make sure the shared RMT channel is currently driving our pin. This
+			// is a no-op while this strip still owns the channel; otherwise it
+			// waits for the previous owner's frame and re-points the GPIO.
+			if (!_driver.attach()) {
+				if (!_attachErrorLogged) {
+					_attachErrorLogged = true;
+					Serial.printf("NeoPixelBusIdf5Rmt: failed to bind RMT channel to pin %u\n", static_cast<unsigned>(_pin));
+				}
+				return;
+			}
+
 			// Wait until the previous frame has left the wire, then honour the
 			// latch/reset time with the line held low (eot_level = 0).
 			_driver.waitAllDone(-1);
@@ -167,7 +189,10 @@ class NeoEsp32Idf5RmtMethodBase {
 			memcpy(_dataSending, _dataEditing, _sizeData);
 
 			if (!_driver.transmit(_dataSending, _sizeData)) {
-				Serial.println("NeoPixelBusIdf5Rmt: transmit failed");
+				if (!_transmitErrorLogged) {
+					_transmitErrorLogged = true;
+					Serial.println("NeoPixelBusIdf5Rmt: transmit failed");
+				}
 			}
 		}
 

@@ -1,6 +1,6 @@
 {
   "name": "NeoPixelBusIdf5Rmt",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "NeoPixelBus output method for WS2812x/SK6812 LEDs built on the ESP-IDF 5 \"new\" RMT TX driver (driver_ng). Avoids the legacy-vs-driver_ng boot conflict on Arduino-ESP32 3.x / ESP-IDF 5.",
   "keywords": "neopixelbus, neopixel, ws2812, ws2812b, sk6812, rgbw, rmt, driver_ng, esp32, esp-idf, led",
   "repository": {

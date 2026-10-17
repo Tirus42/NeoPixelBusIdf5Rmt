@@ -3,15 +3,23 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "RmtSpeedConfig.h"
+
 /**
  * RmtIdf5Driver.h
  *
- * A thin, non-template wrapper around a single ESP-IDF "new" (driver_ng) RMT
- * TX channel.
+ * A thin, non-template, per-strip handle onto the shared ESP-IDF "new"
+ * (driver_ng) RMT TX channel pool (see RmtIdf5ChannelPool.h).
+ *
+ * Historically this class owned a private RMT channel. It now reserves a slot
+ * in the shared pool instead, so that a board with more LED strips than the chip
+ * has TX channels still works (the pool re-points a shared channel's GPIO when
+ * needed). With at most `capacity()` strips the behaviour is unchanged: every
+ * strip gets its own channel and nothing is ever re-pointed.
  *
  * IMPORTANT: this header deliberately contains NO ESP-IDF includes. The
- * implementation lives in RmtIdf5Driver.cpp, which is the only translation unit
- * that pulls in driver/rmt_tx.h.
+ * implementation lives in RmtIdf5Driver.cpp, which only talks to the pool. The
+ * new RMT headers are pulled in exclusively by RmtIdf5ChannelPool.cpp.
  *
  * Why the split:
  * NeoPixelBus.h transitively includes the *deprecated* driver/rmt.h, which
@@ -22,21 +30,18 @@
  *     error: using typedef-name 'rmt_channel_t' after 'struct'
  *
  * Any TU that includes NeoPixelBus.h therefore must not include the new RMT
- * headers. This class hides all of that behind `void*`.
+ * headers. This class hides all of that behind the pool.
  */
 class RmtIdf5Driver {
 	private:
-		void* _channel; // rmt_channel_handle_t
-		void* _encoder; // rmt_encoder_handle_t
+		int _pin;
+		int _slot;
+		RmtSpeedConfig _speed;
+		int _interruptPriority;
+		bool _registered;
 
 	public:
-		struct SpeedConfig {
-			uint32_t resolutionHz; // RMT tick rate, e.g. 20000000 for 50 ns/tick
-			uint16_t bit0High;     // bit 0, high level, in ticks
-			uint16_t bit0Low;      // bit 0, low level, in ticks
-			uint16_t bit1High;     // bit 1, high level, in ticks
-			uint16_t bit1Low;      // bit 1, low level, in ticks
-		};
+		using SpeedConfig = RmtSpeedConfig;
 
 		RmtIdf5Driver();
 		~RmtIdf5Driver();
@@ -44,11 +49,16 @@ class RmtIdf5Driver {
 		RmtIdf5Driver(const RmtIdf5Driver&) = delete;
 		RmtIdf5Driver& operator=(const RmtIdf5Driver&) = delete;
 
-		// Create + enable the channel and byte encoder. Returns false on failure.
+		// Reserve a home channel slot for `pin` and remember the timing. The
+		// channel itself is created lazily on the first attach().
 		bool begin(int pin, const SpeedConfig& speed, int interruptPriority);
 
+		// Ensure the reserved slot is currently driving our pin, creating or
+		// re-pointing the channel as needed. Call this before transmit().
+		bool attach();
+
 		// Queue a frame. Non-blocking; `data` must stay valid until the transfer
-		// completes. Returns false if the driver is not ready.
+		// completes. Returns false if the slot is not attached/created yet.
 		bool transmit(const void* data, size_t sizeBytes);
 
 		// Block (timeoutMs < 0 => forever) until the channel is idle. Returns true
@@ -57,4 +67,14 @@ class RmtIdf5Driver {
 
 		// True while a frame is still being shifted out.
 		bool isBusy() const;
+
+		// The GPIO this strip is wired to.
+		int pin() const {
+			return _pin;
+		}
+
+		// The pool slot this strip shares.
+		int slot() const {
+			return _slot;
+		}
 };

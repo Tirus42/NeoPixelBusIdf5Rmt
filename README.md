@@ -74,6 +74,31 @@ LedStrip_NeoPixelBus<NeoGrbwFeature, NeoEsp32Idf5RmtSk6812Method> leds1(100, 0);
 LedStrip_NeoPixelBus<NeoGrbFeature,  NeoEsp32Idf5RmtSk6812Method> leds2(100, 1);
 ```
 
+## More strips than RMT channels
+
+A small pool of long-lived RMT TX channels (`RmtIdf5ChannelPool`) is shared by
+all strips. Each strip reserves a *home slot* when it is created:
+
+- while the number of strips is **≤ the chip's TX channel count**, every strip
+  owns a slot and **no GPIO switching ever happens** — behaviour is identical to
+  giving each strip its own channel;
+- any additional strip shares a slot. When a slot changes owner the driver waits
+  for the previous owner's frame to finish and then re-points the channel's GPIO
+  (`rmt_disable` → `rmt_tx_switch_gpio` → `rmt_enable`).
+
+Slots are handed out round-robin (a fixed partition of pins over slots) rather
+than by recency: under a uniform "refresh every strip each frame" workload a
+recency/LRU cache would thrash and re-point on *every* strip, while the fixed
+partition only re-points the strips that actually share a slot.
+
+Caveat: re-pointing releases the previous GPIO, so a shared data line is left
+**floating** while another strip is being driven. If you see flicker on a shared
+strip, add a pull-down (e.g. 10 kΩ to GND) on its data line so the floating line
+is held at the idle/low level instead of drifting.
+
+Enable `RMT_IDF5_POOL_LOG_SWITCHES` in `src/RmtIdf5ChannelPool.cpp` to `printf`
+each re-point while bringing a board up.
+
 ## Notes & limitations
 
 - **ESP32-C3 has no RMT DMA** (`SOC_RMT_SUPPORT_DMA` is undefined) and only 48
@@ -82,7 +107,10 @@ LedStrip_NeoPixelBus<NeoGrbFeature,  NeoEsp32Idf5RmtSk6812Method> leds2(100, 1);
   The mitigation is the interrupt priority (`intr_priority = 1`), not buffer
   size. Change `InterruptPriority` in `NeoPixelBusIdf5Rmt.h` if it conflicts
   with another driver.
-- Each strip gets its own RMT TX channel. The ESP32-C3 has **2** TX channels.
+- Each strip targets its own RMT TX channel while the chip has enough of them
+  (**2** on ESP32-C3, **4** on S3/C6). Create more strips than the chip has
+  channels and the extras transparently *share* one (see below), so the number
+  of strips is no longer capped by the number of TX channels.
 - Supported clock: **800 kHz** families listed above. `NeoEsp32Idf5RmtSk6812Method`
   and the WS2812x variants share the same bit timings and differ only in the
   latch/reset time.
